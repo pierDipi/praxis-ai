@@ -239,9 +239,6 @@ async fn fragmented_terminal_event_restores_rehydrated_previous_response_id() {
     response
         .headers
         .insert(http::header::CONTENT_LENGTH, http::HeaderValue::from_static("999"));
-    response
-        .headers
-        .insert(http::header::CONTENT_ENCODING, http::HeaderValue::from_static("gzip"));
     ctx.response_header = Some(response);
     filter.on_response(&mut ctx).await.unwrap();
     assert!(
@@ -249,13 +246,7 @@ async fn fragmented_terminal_event_restores_rehydrated_previous_response_id() {
             .as_ref()
             .unwrap()
             .headers
-            .contains_key(http::header::CONTENT_LENGTH)
-            && !ctx
-                .response_header
-                .as_ref()
-                .unwrap()
-                .headers
-                .contains_key(http::header::CONTENT_ENCODING),
+            .contains_key(http::header::CONTENT_LENGTH),
         "rewritten stream must remove stale representation headers"
     );
 
@@ -336,6 +327,69 @@ async fn continuation_stream_preserves_non_response_events_byte_exact() {
         body.as_deref().unwrap().starts_with(&delta),
         "non-response events in a rewritten chunk must remain byte-exact"
     );
+}
+
+#[tokio::test]
+async fn continuation_stream_preserves_compressed_body_and_headers() {
+    let (filter, mut ctx) = make_armed_context();
+    let mut responses_state = ResponsesState::from_request_body(json!({
+        "previous_response_id": "resp_previous",
+        "stream": true
+    }));
+    responses_state.history_rehydrated = true;
+    ctx.extensions.insert(responses_state);
+    filter.on_request(&mut ctx).await.unwrap();
+    let response = Box::leak(Box::new(crate::test_utils::make_response()));
+    response.headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("text/event-stream"),
+    );
+    response
+        .headers
+        .insert(http::header::CONTENT_ENCODING, http::HeaderValue::from_static("gzip"));
+    response
+        .headers
+        .insert(http::header::CONTENT_LENGTH, http::HeaderValue::from_static("4"));
+    ctx.response_header = Some(response);
+    filter.on_response(&mut ctx).await.unwrap();
+
+    let original = Bytes::from_static(&[0x1f, 0x8b, 0x08, 0x00]);
+    let mut body = Some(original.clone());
+    filter.on_response_body(&mut ctx, &mut body, true).unwrap();
+
+    assert_eq!(body, Some(original), "compressed stream body must remain byte-exact");
+    let headers = &ctx.response_header.as_ref().unwrap().headers;
+    assert_eq!(headers[http::header::CONTENT_ENCODING], "gzip");
+    assert_eq!(headers[http::header::CONTENT_LENGTH], "4");
+}
+
+#[tokio::test]
+async fn continuation_stream_flushes_partial_event_on_empty_eos_callback() {
+    let (filter, mut ctx) = make_armed_context();
+    let mut responses_state = ResponsesState::from_request_body(json!({
+        "previous_response_id": "resp_previous",
+        "stream": true
+    }));
+    responses_state.history_rehydrated = true;
+    ctx.extensions.insert(responses_state);
+    filter.on_request(&mut ctx).await.unwrap();
+    let response = Box::leak(Box::new(crate::test_utils::make_response()));
+    response.headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("text/event-stream"),
+    );
+    ctx.response_header = Some(response);
+    filter.on_response(&mut ctx).await.unwrap();
+
+    let partial = Bytes::from_static(b"event: response.completed\ndata: {\"type\":\"response.completed\"");
+    let mut first = Some(partial.clone());
+    filter.on_response_body(&mut ctx, &mut first, false).unwrap();
+    assert_eq!(first.as_deref(), Some(&[][..]), "partial event should be retained");
+
+    let mut eos = None;
+    filter.on_response_body(&mut ctx, &mut eos, true).unwrap();
+
+    assert_eq!(eos, Some(partial), "empty EOS callback must flush retained wire bytes");
 }
 
 #[test]

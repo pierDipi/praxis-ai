@@ -172,15 +172,16 @@ impl HttpFilter for OpenaiStreamEventsFilter {
             return Ok(FilterAction::Continue);
         }
 
-        let previous_response_id = ctx
-            .extensions
-            .get::<crate::openai::responses::state::ResponsesState>()
-            .and_then(|state| {
-                state
-                    .history_rehydrated
-                    .then(|| state.previous_response_id.clone())
-                    .flatten()
-            });
+        let previous_response_id = response_has_identity_encoding(ctx).then(|| {
+            ctx.extensions
+                .get::<crate::openai::responses::state::ResponsesState>()
+                .and_then(|state| {
+                    state
+                        .history_rehydrated
+                        .then(|| state.previous_response_id.clone())
+                        .flatten()
+                })
+        }).flatten();
         if let Some(state) = ctx.get_filter_state_mut::<StreamEventsState>() {
             state.previous_response_id = previous_response_id;
         }
@@ -217,20 +218,18 @@ impl HttpFilter for OpenaiStreamEventsFilter {
 
 /// Parse SSE frames and accumulate state without modifying the body.
 fn process_chunk(ctx: &mut HttpFilterContext<'_>, body: &mut Option<Bytes>, end_of_stream: bool) {
-    let Some(bytes) = body.as_ref() else {
-        return;
-    };
-
     let Some(mut state) = ctx.remove_filter_state::<StreamEventsState>() else {
         return;
     };
 
-    let now = Instant::now();
-    state.started_at.get_or_insert(now);
+    if let Some(bytes) = body.as_ref() {
+        let now = Instant::now();
+        state.started_at.get_or_insert(now);
 
-    if let Err(e) = parse_and_accumulate(&mut state, ctx, bytes, now) {
-        warn!(error = %e, "SSE parse error in stream_events");
-        ctx.set_metadata("responses.stream_parse_error", "true".to_owned());
+        if let Err(e) = parse_and_accumulate(&mut state, ctx, bytes, now) {
+            warn!(error = %e, "SSE parse error in stream_events");
+            ctx.set_metadata("responses.stream_parse_error", "true".to_owned());
+        }
     }
 
     if state.previous_response_id.is_some() {
@@ -242,10 +241,11 @@ fn process_chunk(ctx: &mut HttpFilterContext<'_>, body: &mut Option<Bytes>, end_
 
 /// Hold at most one partial event and rewrite completed terminal events.
 fn rewrite_stream_chunk(state: &mut StreamEventsState, body: &mut Option<Bytes>, end_of_stream: bool) {
-    let Some(bytes) = body.as_ref() else {
+    if let Some(bytes) = body.as_ref() {
+        state.wire_buffer.extend_from_slice(bytes);
+    } else if !end_of_stream {
         return;
-    };
-    state.wire_buffer.extend_from_slice(bytes);
+    }
     let completed_len = completed_sse_prefix_len(&state.wire_buffer);
     let mut pending = state.wire_buffer.split_off(completed_len);
     let completed = std::mem::replace(&mut state.wire_buffer, std::mem::take(&mut pending));
@@ -499,6 +499,15 @@ fn is_success_sse_response(ctx: &HttpFilterContext<'_>) -> bool {
         .get(http::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .is_some_and(is_event_stream_content_type)
+}
+
+fn response_has_identity_encoding(ctx: &HttpFilterContext<'_>) -> bool {
+    ctx.response_header.as_ref().is_none_or(|response| {
+        response
+            .headers
+            .get(http::header::CONTENT_ENCODING)
+            .is_none_or(|value| value.to_str().is_ok_and(|encoding| encoding.eq_ignore_ascii_case("identity")))
+    })
 }
 
 /// Remove representation metadata invalidated by rewriting terminal SSE events.
