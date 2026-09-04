@@ -75,6 +75,9 @@ use crate::{
     },
 };
 
+/// Metadata arming the finite continuation response compatibility rewrite.
+const RESTORE_PREVIOUS_RESPONSE_ID_KEY: &str = "openai_response_store.restore_previous_response_id";
+
 /// Persists Responses API responses to the configured response store backend.
 ///
 /// # YAML
@@ -686,7 +689,7 @@ impl HttpFilter for ResponseStoreFilter {
     }
 
     fn response_body_access(&self) -> BodyAccess {
-        BodyAccess::ReadOnly
+        BodyAccess::ReadWrite
     }
 
     /// `StreamBuffer` so the protocol layer assembles the complete
@@ -759,6 +762,11 @@ impl HttpFilter for ResponseStoreFilter {
     }
 
     async fn on_response(&self, ctx: &mut HttpFilterContext<'_>) -> Result<FilterAction, FilterError> {
+        if should_restore_previous_response_id(ctx) && response_is_finite_success(ctx) {
+            ctx.set_metadata(RESTORE_PREVIOUS_RESPONSE_ID_KEY, "true");
+            prepare_rewritten_response_headers(ctx);
+        }
+
         if should_skip_persist(ctx) {
             return Ok(FilterAction::Continue);
         }
@@ -782,6 +790,10 @@ impl HttpFilter for ResponseStoreFilter {
         body: &mut Option<Bytes>,
         end_of_stream: bool,
     ) -> Result<FilterAction, FilterError> {
+        if end_of_stream && ctx.get_metadata(RESTORE_PREVIOUS_RESPONSE_ID_KEY) == Some("true") {
+            restore_previous_response_id(ctx, body)?;
+        }
+
         if self.should_release_skipped_response_body(ctx) {
             return Ok(FilterAction::Release);
         }
@@ -799,6 +811,75 @@ impl HttpFilter for ResponseStoreFilter {
 
         self.persist_from_buffered_body(ctx, body)
     }
+}
+
+/// Restore a locally consumed continuation id on a finite Responses resource.
+///
+/// Rehydration deliberately removes `previous_response_id` from the provider
+/// request after expanding its history. Providers that echo request fields can
+/// therefore return `null`; the client-facing resource must still describe the
+/// continuation request that Praxis accepted.
+fn restore_previous_response_id(ctx: &HttpFilterContext<'_>, body: &mut Option<Bytes>) -> Result<(), FilterError> {
+    let Some(bytes) = body.as_ref() else {
+        return Ok(());
+    };
+    let Some(previous_response_id) = ctx
+        .extensions
+        .get::<ResponsesState>()
+        .and_then(|state| state.previous_response_id.as_deref())
+    else {
+        return Ok(());
+    };
+    let Ok(mut response) = serde_json::from_slice::<Value>(bytes) else {
+        return Ok(());
+    };
+    let Some(object) = response.as_object_mut() else {
+        return Ok(());
+    };
+    if object.get("object").and_then(Value::as_str) != Some("response") {
+        return Ok(());
+    }
+    object.insert(
+        "previous_response_id".to_owned(),
+        Value::String(previous_response_id.to_owned()),
+    );
+    *body = Some(Bytes::from(serde_json::to_vec(&response).map_err(
+        |error| -> FilterError { format!("openai_response_store: {error}").into() },
+    )?));
+    Ok(())
+}
+
+/// Remove representation metadata invalidated by reserializing the JSON body.
+fn prepare_rewritten_response_headers(ctx: &mut HttpFilterContext<'_>) {
+    let Some(response) = &mut ctx.response_header else {
+        return;
+    };
+    response.headers.remove(http::header::CONTENT_LENGTH);
+    response.headers.remove(http::header::CONTENT_ENCODING);
+    response.headers.remove(http::header::CONTENT_RANGE);
+    response.headers.remove(http::header::ETAG);
+    for header in ["content-digest", "content-md5", "digest", "repr-digest"] {
+        response.headers.remove(header);
+    }
+    ctx.response_headers_modified = true;
+}
+
+fn should_restore_previous_response_id(ctx: &HttpFilterContext<'_>) -> bool {
+    ctx.extensions
+        .get::<ResponsesState>()
+        .is_some_and(|state| state.history_rehydrated && state.previous_response_id.is_some())
+        && !is_streaming_request(ctx)
+}
+
+fn response_is_finite_success(ctx: &HttpFilterContext<'_>) -> bool {
+    ctx.response_header.as_ref().is_none_or(|response| {
+        response.status.is_success()
+            && response
+                .headers
+                .get(http::header::CONTENT_TYPE)
+                .and_then(|value| value.to_str().ok())
+                .is_some_and(is_json_content_type)
+    })
 }
 
 // -----------------------------------------------------------------------------

@@ -395,6 +395,7 @@ class TestOpenAIResponsesVLLM:
         )
 
         assert second.status == "completed"
+        assert second.previous_response_id == first.id
         assert "VIOLET-7319" in second.output_text
 
     def test_doc_extract_inline_file_to_input_text(self, openai_client):

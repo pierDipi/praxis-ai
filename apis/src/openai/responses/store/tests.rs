@@ -228,12 +228,12 @@ fn name_returns_openai_response_store() {
 }
 
 #[test]
-fn response_body_access_is_read_only() {
+fn response_body_access_is_read_write() {
     let filter = make_filter();
     assert_eq!(
         filter.response_body_access(),
-        BodyAccess::ReadOnly,
-        "response body access should be ReadOnly"
+        BodyAccess::ReadWrite,
+        "response body access should allow restoring locally consumed continuation metadata"
     );
 }
 
@@ -667,6 +667,120 @@ fn on_response_body_releases_skipped_non_end_of_stream() {
     assert!(
         matches!(action, FilterAction::Release),
         "should release non-persisted non-end-of-stream chunks"
+    );
+}
+
+#[tokio::test]
+async fn rehydrated_response_restores_id_and_clears_representation_headers_when_store_is_disabled() {
+    let filter = make_filter();
+    let req = crate::test_utils::make_request(http::Method::POST, "/v1/responses");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    ctx.set_metadata("openai_responses_format.format", "openai_responses");
+    ctx.set_metadata("openai_responses_format.store", "false");
+    let mut state = ResponsesState::from_request_body(json!({
+        "model": "gpt-4.1",
+        "input": "continue",
+        "previous_response_id": "resp_previous",
+        "store": false
+    }));
+    state.history_rehydrated = true;
+    ctx.extensions.insert(state);
+    let mut response_header = crate::test_utils::make_response();
+    for (name, value) in [
+        ("content-type", "application/json"),
+        ("content-length", "70"),
+        ("content-encoding", "gzip"),
+        ("content-range", "bytes 0-69/70"),
+        ("etag", "\"old\""),
+        ("content-digest", "sha-256=:old:"),
+        ("content-md5", "old"),
+        ("digest", "sha-256=old"),
+        ("repr-digest", "sha-256=:old:"),
+    ] {
+        response_header.headers.insert(name, value.parse().unwrap());
+    }
+    ctx.response_header = Some(&mut response_header);
+
+    let header_action = filter.on_response(&mut ctx).await.unwrap();
+
+    assert!(
+        matches!(header_action, FilterAction::Continue),
+        "store-disabled response should continue after arming restoration"
+    );
+    let headers = &ctx.response_header.as_ref().unwrap().headers;
+    for name in [
+        "content-length",
+        "content-encoding",
+        "content-range",
+        "etag",
+        "content-digest",
+        "content-md5",
+        "digest",
+        "repr-digest",
+    ] {
+        assert!(
+            !headers.contains_key(name),
+            "rewritten response must remove stale {name}"
+        );
+    }
+    assert!(ctx.response_headers_modified);
+    let mut body = Some(Bytes::from_static(
+        br#"{"id":"resp_current","object":"response","previous_response_id":null}"#,
+    ));
+
+    let action = filter.on_response_body(&mut ctx, &mut body, true).unwrap();
+
+    assert!(
+        matches!(action, FilterAction::Release),
+        "store-disabled response should be released after compatibility restoration"
+    );
+    let response: serde_json::Value = serde_json::from_slice(body.as_deref().unwrap()).unwrap();
+    assert_eq!(
+        response["previous_response_id"], "resp_previous",
+        "client-visible response should retain the continuation id"
+    );
+}
+
+#[tokio::test]
+async fn rehydrated_response_does_not_rewrite_non_json_body_or_headers() {
+    let filter = make_filter();
+    let req = crate::test_utils::make_request(http::Method::POST, "/v1/responses");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    ctx.set_metadata("openai_responses_format.format", "openai_responses");
+    ctx.set_metadata("openai_responses_format.store", "false");
+    let mut state = ResponsesState::from_request_body(json!({
+        "previous_response_id": "resp_previous",
+        "store": false
+    }));
+    state.history_rehydrated = true;
+    ctx.extensions.insert(state);
+    let mut response_header = crate::test_utils::make_response();
+    response_header
+        .headers
+        .insert(http::header::CONTENT_TYPE, "text/plain".parse().unwrap());
+    response_header
+        .headers
+        .insert(http::header::CONTENT_LENGTH, "70".parse().unwrap());
+    ctx.response_header = Some(&mut response_header);
+
+    let header_action = filter.on_response(&mut ctx).await.unwrap();
+    let original = Bytes::from_static(br#"{"object":"response","previous_response_id":null}"#);
+    let mut body = Some(original.clone());
+    let body_action = filter.on_response_body(&mut ctx, &mut body, true).unwrap();
+
+    assert!(
+        matches!(header_action, FilterAction::Continue),
+        "non-JSON response should continue without arming restoration"
+    );
+    assert!(
+        matches!(body_action, FilterAction::Release),
+        "store-disabled non-JSON response should be released unchanged"
+    );
+    assert_eq!(body, Some(original), "non-JSON response body must remain byte-exact");
+    assert_eq!(
+        ctx.response_header.as_ref().unwrap().headers[http::header::CONTENT_LENGTH],
+        "70",
+        "non-rewritten response must retain its representation headers"
     );
 }
 
