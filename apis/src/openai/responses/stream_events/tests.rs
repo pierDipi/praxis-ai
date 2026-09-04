@@ -221,6 +221,123 @@ async fn terminal_event_writes_response_object() {
     assert_eq!(ctx.get_metadata("responses.status"), Some("completed"),);
 }
 
+#[tokio::test]
+async fn fragmented_terminal_event_restores_rehydrated_previous_response_id() {
+    let (filter, mut ctx) = make_armed_context();
+    let mut responses_state = ResponsesState::from_request_body(json!({
+        "previous_response_id": "resp_previous",
+        "stream": true
+    }));
+    responses_state.history_rehydrated = true;
+    ctx.extensions.insert(responses_state);
+    filter.on_request(&mut ctx).await.unwrap();
+    let response = Box::leak(Box::new(crate::test_utils::make_response()));
+    response.headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("text/event-stream"),
+    );
+    response
+        .headers
+        .insert(http::header::CONTENT_LENGTH, http::HeaderValue::from_static("999"));
+    response
+        .headers
+        .insert(http::header::CONTENT_ENCODING, http::HeaderValue::from_static("gzip"));
+    ctx.response_header = Some(response);
+    filter.on_response(&mut ctx).await.unwrap();
+    assert!(
+        !ctx.response_header
+            .as_ref()
+            .unwrap()
+            .headers
+            .contains_key(http::header::CONTENT_LENGTH)
+            && !ctx
+                .response_header
+                .as_ref()
+                .unwrap()
+                .headers
+                .contains_key(http::header::CONTENT_ENCODING),
+        "rewritten stream must remove stale representation headers"
+    );
+
+    let terminal = make_sse_chunk(
+        "response.completed",
+        &json!({
+            "response": {
+                "id": "resp_current",
+                "object": "response",
+                "status": "completed",
+                "previous_response_id": null,
+                "output": []
+            }
+        }),
+    );
+    let split = terminal.len() / 2;
+    let mut first = Some(terminal.slice(..split));
+    filter.on_response_body(&mut ctx, &mut first, false).unwrap();
+    assert_eq!(
+        first.as_deref(),
+        Some(&[][..]),
+        "partial terminal event must be retained until its boundary"
+    );
+
+    let mut second = Some(terminal.slice(split..));
+    filter.on_response_body(&mut ctx, &mut second, false).unwrap();
+
+    let rewritten = std::str::from_utf8(second.as_deref().unwrap()).unwrap();
+    assert!(
+        rewritten.contains(r#""previous_response_id":"resp_previous""#),
+        "terminal response event should expose the locally consumed continuation id: {rewritten}"
+    );
+    assert_eq!(
+        ctx.extensions.get::<ResponsesState>().unwrap().response_object["previous_response_id"],
+        "resp_previous",
+        "accumulated terminal response should match the rewritten client event"
+    );
+}
+
+#[tokio::test]
+async fn continuation_stream_preserves_non_response_events_byte_exact() {
+    let (filter, mut ctx) = make_armed_context();
+    let mut responses_state = ResponsesState::from_request_body(json!({
+        "previous_response_id": "resp_previous",
+        "stream": true
+    }));
+    responses_state.history_rehydrated = true;
+    ctx.extensions.insert(responses_state);
+    filter.on_request(&mut ctx).await.unwrap();
+    let response = Box::leak(Box::new(crate::test_utils::make_response()));
+    response.headers.insert(
+        http::header::CONTENT_TYPE,
+        http::HeaderValue::from_static("text/event-stream"),
+    );
+    ctx.response_header = Some(response);
+    filter.on_response(&mut ctx).await.unwrap();
+
+    let delta = make_sse_chunk("response.output_text.delta", &json!({"delta": "hello"}));
+    let terminal = make_sse_chunk(
+        "response.completed",
+        &json!({
+            "response": {
+                "id": "resp_current",
+                "object": "response",
+                "status": "completed",
+                "previous_response_id": null,
+                "output": []
+            }
+        }),
+    );
+    let mut combined = Vec::from(delta.as_ref());
+    combined.extend_from_slice(&terminal);
+    let mut body = Some(Bytes::from(combined));
+
+    filter.on_response_body(&mut ctx, &mut body, false).unwrap();
+
+    assert!(
+        body.as_deref().unwrap().starts_with(&delta),
+        "non-response events in a rewritten chunk must remain byte-exact"
+    );
+}
+
 #[test]
 fn response_accumulation_sums_usage_across_iterations() {
     let req = make_request(http::Method::POST, "/v1/responses");
@@ -427,6 +544,9 @@ fn body_passes_through_unchanged() {
     let (filter, mut ctx) = make_armed_context();
     ctx.insert_filter_state(StreamEventsState {
         frame_parser: SseFrameParser::new(10_485_760),
+        wire_buffer: Vec::new(),
+        max_wire_buffer_bytes: 10_485_760,
+        previous_response_id: None,
         event_count: 0,
         max_events: 100_000,
         timeout: std::time::Duration::from_secs(300),
@@ -445,7 +565,7 @@ fn body_passes_through_unchanged() {
     assert_eq!(
         body.as_ref().unwrap().as_ref(),
         original.as_ref(),
-        "body should pass through unchanged in ReadOnly mode"
+        "body should pass through unchanged when no continuation rewrite is armed"
     );
 }
 
@@ -454,6 +574,9 @@ fn parse_error_sets_metadata() {
     let (filter, mut ctx) = make_armed_context();
     ctx.insert_filter_state(StreamEventsState {
         frame_parser: SseFrameParser::new(10),
+        wire_buffer: Vec::new(),
+        max_wire_buffer_bytes: 10,
+        previous_response_id: None,
         event_count: 0,
         max_events: 100_000,
         timeout: std::time::Duration::from_secs(300),

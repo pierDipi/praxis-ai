@@ -90,6 +90,15 @@ pub(super) fn accumulate_response_object(
     let had_prior_usage = {
         let state = ctx.extensions.get_or_insert_with(ResponsesState::default);
         let had_prior_usage = !state.usage.is_null();
+        if state.history_rehydrated
+            && let Some(previous_response_id) = state.previous_response_id.as_deref()
+            && let Some(object) = response.as_object_mut()
+        {
+            object.insert(
+                "previous_response_id".to_owned(),
+                Value::String(previous_response_id.to_owned()),
+            );
+        }
         if let Some(usage) = response.get("usage").filter(|usage| !usage.is_null()) {
             merge_usage(&mut state.usage, usage);
         }

@@ -421,6 +421,35 @@ class TestOpenAIResponsesVLLM:
         assert second.previous_response_id == first.id
         assert "VIOLET-7319" in second.output_text
 
+    def test_rehydrated_streaming_second_turn(self, openai_client):
+        first = openai_client.responses.create(
+            model=VLLM_MODEL,
+            input="Remember this nonce: AMBER-4826. Acknowledge it. /no_think",
+            store=True,
+            max_output_tokens=128,
+        )
+
+        stream = openai_client.responses.create(
+            model=VLLM_MODEL,
+            input="What nonce did I just give you? Repeat it exactly. /no_think",
+            previous_response_id=first.id,
+            store=False,
+            stream=True,
+            max_output_tokens=128,
+        )
+
+        text_parts = []
+        completed = None
+        for event in stream:
+            if event.type == "response.output_text.delta":
+                text_parts.append(event.delta)
+            if event.type == "response.completed":
+                completed = event.response
+
+        assert completed is not None
+        assert completed.previous_response_id == first.id
+        assert "AMBER-4826" in "".join(text_parts)
+
     def test_doc_extract_inline_file_to(self, openai_client):
         """Issue #397: inline file_data is extracted to input_text and
         consumed by vLLM inference.
