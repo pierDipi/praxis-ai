@@ -87,7 +87,7 @@ zeroize = "1.9.0"
 # Praxis core dependencies
 praxis-core = { version = "0.5.3", package = "praxis-proxy-core" }
 praxis-filter = { version = "0.5.3", package = "praxis-proxy-filter" }
-praxis-protocol = { version = "0.5.3", package = "praxis-proxy-protocol" }
+praxis-protocol = { version = "0.5.3", package = "praxis-proxy-protocol", features = ["admin-api"] }
 praxis-tls = { version = "0.5.3", package = "praxis-proxy-tls" }
 praxis = { version = "0.5.3", package = "praxis-proxy" }
 praxis-test-utils = { path = "tests/utils" }
@@ -304,3 +304,10 @@ invalid_html_tags = "deny"
 missing_crate_level_docs = "deny"
 private_doc_tests = "allow"
 
+
+[patch.crates-io]
+praxis-proxy-core = { path = "../praxis/core" }
+praxis-proxy-filter = { path = "../praxis/filter" }
+praxis-proxy-protocol = { path = "../praxis/protocol" }
+praxis-proxy-tls = { path = "../praxis/tls" }
+praxis-proxy = { path = "../praxis/server" }

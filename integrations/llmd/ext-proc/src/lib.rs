@@ -794,6 +794,7 @@ impl ExtProcFilter {
             exchange,
             headers_sent: true,
             request_phase_complete: false,
+            request_body_sent: false,
         };
 
         ctx.insert_filter_state(state);
@@ -820,6 +821,7 @@ impl ExtProcFilter {
             exchange: ExtProcExchange::open(self.channel(), &self.exchange_config()),
             headers_sent: false,
             request_phase_complete: false,
+            request_body_sent: false,
         };
         tokio::time::timeout(self.message_timeout, state.exchange.send(headers_request))
             .await
@@ -1103,6 +1105,9 @@ struct ExtProcState {
 
     /// Whether request-phase processor responses have been consumed.
     request_phase_complete: bool,
+
+    /// Whether a non-terminal body chunk was already forwarded.
+    request_body_sent: bool,
 }
 
 // -----------------------------------------------------------------------------
@@ -1226,29 +1231,37 @@ impl HttpFilter for ExtProcFilter {
                 let state = ctx
                     .get_filter_state_mut::<ExtProcState>()
                     .ok_or_else(|| -> FilterError { "ext_proc: missing exchange state".into() })?;
-                state
+                let result = state
                     .exchange
                     .send(processing_request::Request::RequestBody(HttpBody {
                         body: chunk_bytes,
                         end_of_stream: false,
                     }))
                     .await
-                    .map_err(Self::exchange_err)
+                    .map_err(Self::exchange_err);
+                if result.is_ok() {
+                    state.request_body_sent = true;
+                }
+                result
             };
             return Ok(self.call_or_reject(send_result.map(|()| FilterAction::Continue)));
         }
 
-        // Synthetic EOS: send an empty terminal body marker.
-        // The accumulated body was already sent incrementally
-        // during pre-read. Do NOT resend it.
+        // StreamBuffer delivers the complete body in the terminal callback.
+        // Copy once at the protobuf ownership boundary and mark it as EOS.
         let eos_result = {
             let state = ctx
                 .get_filter_state_mut::<ExtProcState>()
                 .ok_or_else(|| -> FilterError { "ext_proc: missing exchange state".into() })?;
+            let terminal_body = if state.request_body_sent {
+                Vec::new()
+            } else {
+                body.as_ref().map_or_else(Vec::new, |bytes| bytes.to_vec())
+            };
             state
                 .exchange
                 .send(processing_request::Request::RequestBody(HttpBody {
-                    body: Vec::new(),
+                    body: terminal_body,
                     end_of_stream: true,
                 }))
                 .await

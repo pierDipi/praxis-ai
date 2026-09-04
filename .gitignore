@@ -47,6 +47,9 @@ docs/**/
 !docs/conformance/**/
 !docs/conformance/**
 !docs/developing/
+!docs/design/
+!docs/design/**/
+!docs/design/**/*.md
 !docs/filters/
 !docs/filters/http/
 !docs/filters/http/*/

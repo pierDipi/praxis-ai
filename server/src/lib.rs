@@ -3,6 +3,7 @@
 
 //! Server bootstrap for Praxis AI.
 
+mod config_compat;
 pub(crate) mod pipelines;
 pub(crate) mod reload;
 mod server;
@@ -37,7 +38,23 @@ const DEFAULT_CONFIG: &str = include_str!("default.yaml");
 pub fn load_config(
     explicit_path: Option<&str>,
 ) -> Result<praxis_core::config::Config, praxis_core::errors::ProxyError> {
-    praxis_core::config::Config::load(explicit_path, DEFAULT_CONFIG)
+    let path = explicit_path.map(std::path::Path::new).or_else(|| {
+        std::path::Path::new("praxis.yaml")
+            .exists()
+            .then(|| std::path::Path::new("praxis.yaml"))
+    });
+    match path {
+        Some(path) => {
+            let input = std::fs::read_to_string(path).map_err(|error| {
+                praxis_core::errors::ProxyError::Config(format!(
+                    "failed to read config file '{}': {error}",
+                    path.display()
+                ))
+            })?;
+            config_compat::parse_config_yaml(&input)
+        },
+        None => config_compat::parse_config_yaml(DEFAULT_CONFIG),
+    }
 }
 
 // -----------------------------------------------------------------------------

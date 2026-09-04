@@ -3,6 +3,8 @@
 
 //! AI inference proxy filters.
 
+pub mod llmd;
 mod model_to_header;
 
+pub use llmd::{LlmdPrepareFilter, LlmdStageFilter};
 pub use model_to_header::ModelToHeaderFilter;

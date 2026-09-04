@@ -177,12 +177,12 @@ patch-praxis:
 		echo "Already patched — run 'make unpatch-praxis' first"; \
 		exit 1; \
 	fi
-	@printf '\n[patch.crates-io]\n\
-	praxis-proxy-core = { path = "../praxis/core" }\n\
-	praxis-proxy-filter = { path = "../praxis/filter" }\n\
-	praxis-proxy-protocol = { path = "../praxis/protocol" }\n\
-	praxis-proxy-tls = { path = "../praxis/tls" }\n\
-	praxis-proxy = { path = "../praxis/server" }\n' >> Cargo.toml
+	@printf '%s\n' '' '[patch.crates-io]' \
+		'praxis-proxy-core = { path = "../praxis/core" }' \
+		'praxis-proxy-filter = { path = "../praxis/filter" }' \
+		'praxis-proxy-protocol = { path = "../praxis/protocol" }' \
+		'praxis-proxy-tls = { path = "../praxis/tls" }' \
+		'praxis-proxy = { path = "../praxis/server" }' >> Cargo.toml
 	@echo "Patched Cargo.toml to use ../praxis path dependencies"
 
 unpatch-praxis:

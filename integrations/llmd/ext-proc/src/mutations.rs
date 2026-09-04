@@ -36,11 +36,12 @@ use crate::{
 /// the Envoy `ext_proc` convention that external processors
 /// expect.
 pub(crate) fn request_to_proto_headers(ctx: &HttpFilterContext<'_>) -> HttpHeaders {
-    let path = ctx
-        .request
-        .uri
-        .path_and_query()
-        .map_or_else(|| ctx.request.uri.path(), http::uri::PathAndQuery::as_str);
+    let path = ctx.rewritten_path.as_deref().unwrap_or_else(|| {
+        ctx.request
+            .uri
+            .path_and_query()
+            .map_or_else(|| ctx.request.uri.path(), http::uri::PathAndQuery::as_str)
+    });
     let scheme = if ctx.downstream_tls { "https" } else { "http" };
 
     let mut headers = vec![
@@ -54,7 +55,20 @@ pub(crate) fn request_to_proto_headers(ctx: &HttpFilterContext<'_>) -> HttpHeade
     }
 
     for (name, value) in &ctx.request.headers {
+        let replaced = ctx.request_headers_to_remove.iter().any(|candidate| candidate == name)
+            || ctx
+                .request_headers_to_set
+                .iter()
+                .any(|(candidate, _)| candidate == name);
+        if !replaced {
+            headers.push(proto_header_value(name.as_str(), value));
+        }
+    }
+    for (name, value) in &ctx.request_headers_to_set {
         headers.push(proto_header_value(name.as_str(), value));
+    }
+    for (name, value) in &ctx.extra_request_headers {
+        headers.push(proto_header(name, value));
     }
 
     HttpHeaders {

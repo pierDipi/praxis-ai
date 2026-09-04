@@ -162,7 +162,7 @@ fn handle_reload(
         },
     };
 
-    let new_config = match Config::from_yaml(&content) {
+    let new_config = match crate::config_compat::parse_config_yaml(&content) {
         Ok(c) => c,
         Err(e) => {
             error!(

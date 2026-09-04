@@ -1,0 +1,47 @@
+# Local guardrail callout test using nemo-guardrail-mock.py.
+#
+# The guardrail service must return JSON such as:
+#   {"status":"success"}
+# Start it with: python3 nemo-guardrail-mock.py --verdict success
+
+listeners:
+  - name: gateway
+    address: "127.0.0.1:18080"
+    filter_chains:
+      - webhook-guardrails
+
+filter_chains:
+  - name: webhook-guardrails
+    filters:
+      # Promote the client request's JSON `model` field to
+      # X-Gateway-Model-Name.
+      # This supports model-aware routing and policy selection downstream.
+      - filter: model_to_header
+        header: X-Gateway-Model-Name
+
+      - filter: ai_guardrails
+        provider:
+          type: nemo
+          endpoint: "http://127.0.0.1:3001/v1/guardrail/checks"
+          # This is the model value sent to the guardrail webhook.
+          # Change it and restart Praxis to test another guardrail model.
+          model: "guardrail-test-model"
+          timeout_ms: 10000
+        phase:
+          request: true
+          response: false
+
+      - filter: router
+        routes:
+          - path_prefix: "/"
+            cluster: provider
+
+      - filter: load_balancer
+        clusters:
+          - name: provider
+            endpoints:
+              - "127.0.0.1:3000"
+
+insecure_options:
+  # The guardrail mock and dummy upstream are local for this manual test.
+  allow_private_endpoints: true

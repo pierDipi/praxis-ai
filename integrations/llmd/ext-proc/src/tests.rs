@@ -801,6 +801,29 @@ fn request_to_proto_headers_includes_method_and_path() {
 }
 
 #[test]
+fn request_to_proto_headers_prefers_rewritten_path() {
+    let req = make_request(Method::POST, "/v1/chat/completions");
+    let mut ctx = make_ctx(&req);
+    ctx.rewritten_path = Some("/inference/v1/generate".to_owned());
+
+    let headers = mutations::request_to_proto_headers(&ctx).headers.unwrap().headers;
+    let path = headers.iter().find(|header| header.key == ":path").unwrap();
+    assert_eq!(path.value, "/inference/v1/generate");
+}
+
+#[test]
+fn request_to_proto_headers_includes_prior_filter_mutations() {
+    let req = make_request(Method::POST, "/inference/v1/generate");
+    let mut ctx = make_ctx(&req);
+    ctx.request_headers_to_set
+        .push(("epp-profile".parse().unwrap(), "encode".parse().unwrap()));
+
+    let headers = mutations::request_to_proto_headers(&ctx).headers.unwrap().headers;
+    let profile = headers.iter().find(|header| header.key == "epp-profile").unwrap();
+    assert_eq!(profile.value, "encode");
+}
+
+#[test]
 fn request_to_proto_headers_preserves_query_string() {
     let req = make_request(Method::GET, "/search?q=secret&page=1");
     let ctx = make_ctx(&req);
@@ -2476,6 +2499,7 @@ fn make_ctx(req: &praxis_filter::Request) -> HttpFilterContext<'_> {
         health_registry: None,
         id_generator: &TEST_ID_GENERATOR,
         kv_stores: None,
+        session_stores: None,
         metrics_route: None,
         peer_identity: None,
         request: req,
@@ -2488,6 +2512,13 @@ fn make_ctx(req: &praxis_filter::Request) -> HttpFilterContext<'_> {
         response_headers_modified: false,
         subrequest_client: None,
         subrequest_response_mode: praxis_filter::SubRequestResponseMode::Buffered,
+        attempted_endpoints: Vec::new(),
+        retry_policy: None,
+        route_retry_policy: None,
+        cluster_retry_state: None,
+        cluster_retry_state_released: false,
+        endpoint_reselector: None,
+        pinned_endpoint_address: None,
         rewritten_path: None,
         selected_endpoint_index: None,
         time_source: &praxis_core::time::SystemTimeSource,
