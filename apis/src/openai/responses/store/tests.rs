@@ -689,7 +689,6 @@ async fn rehydrated_response_restores_id_and_clears_representation_headers_when_
     for (name, value) in [
         ("content-type", "application/json"),
         ("content-length", "70"),
-        ("content-encoding", "gzip"),
         ("content-range", "bytes 0-69/70"),
         ("etag", "\"old\""),
         ("content-digest", "sha-256=:old:"),
@@ -782,6 +781,42 @@ async fn rehydrated_response_does_not_rewrite_non_json_body_or_headers() {
         "70",
         "non-rewritten response must retain its representation headers"
     );
+}
+
+#[tokio::test]
+async fn rehydrated_response_preserves_compressed_body_and_headers() {
+    let filter = make_filter();
+    let req = crate::test_utils::make_request(http::Method::POST, "/v1/responses");
+    let mut ctx = crate::test_utils::make_filter_context(&req);
+    ctx.set_metadata("openai_responses_format.format", "openai_responses");
+    ctx.set_metadata("openai_responses_format.store", "false");
+    let mut state = ResponsesState::from_request_body(json!({
+        "previous_response_id": "resp_previous",
+        "store": false
+    }));
+    state.history_rehydrated = true;
+    ctx.extensions.insert(state);
+    let mut response_header = crate::test_utils::make_response();
+    response_header
+        .headers
+        .insert(http::header::CONTENT_TYPE, "application/json".parse().unwrap());
+    response_header
+        .headers
+        .insert(http::header::CONTENT_ENCODING, "gzip".parse().unwrap());
+    response_header
+        .headers
+        .insert(http::header::CONTENT_LENGTH, "4".parse().unwrap());
+    ctx.response_header = Some(&mut response_header);
+
+    drop(filter.on_response(&mut ctx).await.unwrap());
+    let original = Bytes::from_static(&[0x1f, 0x8b, 0x08, 0x00]);
+    let mut body = Some(original.clone());
+    drop(filter.on_response_body(&mut ctx, &mut body, true).unwrap());
+
+    assert_eq!(body, Some(original), "compressed body must remain byte-exact");
+    let headers = &ctx.response_header.as_ref().unwrap().headers;
+    assert_eq!(headers[http::header::CONTENT_ENCODING], "gzip");
+    assert_eq!(headers[http::header::CONTENT_LENGTH], "4");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

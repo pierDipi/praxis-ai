@@ -874,12 +874,19 @@ fn should_restore_previous_response_id(ctx: &HttpFilterContext<'_>) -> bool {
 fn response_is_finite_success(ctx: &HttpFilterContext<'_>) -> bool {
     ctx.response_header.as_ref().is_none_or(|response| {
         response.status.is_success()
+            && headers_have_identity_encoding(&response.headers)
             && response
                 .headers
                 .get(http::header::CONTENT_TYPE)
                 .and_then(|value| value.to_str().ok())
                 .is_some_and(is_json_content_type)
     })
+}
+
+fn headers_have_identity_encoding(headers: &http::HeaderMap) -> bool {
+    headers
+        .get(http::header::CONTENT_ENCODING)
+        .is_none_or(|value| value.to_str().is_ok_and(|encoding| encoding.eq_ignore_ascii_case("identity")))
 }
 
 // -----------------------------------------------------------------------------
