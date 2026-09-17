@@ -30,6 +30,10 @@ const DEFAULT_MAX_BODY_BYTES: usize = 1_048_576;
 /// `choices[].message` on responses). Responses API, Anthropic Messages,
 /// and MCP are not supported yet (see ai#1043).
 ///
+/// For `NeMo`, `provider.guardrails.config_ids` selects deployed guardrail
+/// configurations. When `provider.guardrails` is omitted, the request omits
+/// `config_ids` so the service can use its default configuration.
+///
 /// # YAML configuration
 ///
 /// ```yaml
@@ -38,6 +42,9 @@ const DEFAULT_MAX_BODY_BYTES: usize = 1_048_576;
 ///   type: nemo
 ///   endpoint: "http://nemo:8000/v1/checks"
 ///   allow_private_endpoint: true
+///   model: "check-model"
+///   guardrails:
+///     config_ids: ["your-config"]
 ///   timeout_ms: 5000
 /// phase:
 ///   request: true
