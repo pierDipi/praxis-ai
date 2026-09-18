@@ -143,12 +143,7 @@ impl NemoProvider {
     pub fn from_config(config: &serde_yaml::Value, client: SubRequestClient) -> Result<Self, FilterError> {
         let cfg: NemoConfig = serde_yaml::from_value(config.clone())
             .map_err(|e| -> FilterError { format!("ai_guardrails (nemo): {e}").into() })?;
-        if cfg.guardrails.as_ref().is_some_and(|g| g.config_ids.is_empty()) {
-            return Err(
-                "ai_guardrails (nemo): 'guardrails.config_ids' must not be empty; omit 'guardrails' to use the service default"
-                    .into(),
-            );
-        }
+        validate_guardrails_config(&cfg)?;
         if cfg.endpoint.is_empty() {
             return Err("ai_guardrails (nemo): 'endpoint' must not be empty".into());
         }
@@ -243,6 +238,17 @@ impl GuardProvider for NemoProvider {
 // -----------------------------------------------------------------------------
 // Private Utilities
 // -----------------------------------------------------------------------------
+
+/// Reject an explicitly empty configuration selection.
+fn validate_guardrails_config(config: &NemoConfig) -> Result<(), FilterError> {
+    if config.guardrails.as_ref().is_some_and(|g| g.config_ids.is_empty()) {
+        return Err(
+            "ai_guardrails (nemo): 'guardrails.config_ids' must not be empty; omit 'guardrails' to use the service default"
+                .into(),
+        );
+    }
+    Ok(())
+}
 
 /// Combine a per-slice verdict into the running evaluation state.
 ///
