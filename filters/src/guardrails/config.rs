@@ -12,7 +12,6 @@ use serde::Deserialize;
 /// provider:
 ///   type: nemo
 ///   endpoint: "http://nemo:8000/v1/checks"
-///   model: "check-model"
 ///   guardrails:
 ///     config_ids: ["your-config"]
 ///   timeout_ms: 5000

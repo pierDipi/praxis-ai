@@ -50,11 +50,11 @@ fn nemo_guardrails_forwards_to_backend() {
     assert_eq!(
         payload,
         serde_json::json!({
-            "model": "check-model",
+            "model": "",
             "messages": [{"role": "user", "content": "Hello, how are you?"}],
             "guardrails": {"rail_types": ["input"], "config_ids": ["your-config"]}
         }),
-        "example must send the configured model and guardrail selection to NeMo"
+        "example must select guardrails without overriding the configured NeMo model"
     );
 }
 

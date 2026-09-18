@@ -94,11 +94,11 @@ fn response_guardrails_pass_forwards_upstream_body() {
     assert_eq!(
         payload,
         serde_json::json!({
-            "model": "check-model",
+            "model": "",
             "messages": [{"role": "assistant", "content": "Hello! I'm doing well."}],
             "guardrails": {"rail_types": ["output"], "config_ids": ["your-config"]}
         }),
-        "response example must send the configured guardrail selection to NeMo"
+        "response example must select guardrails without overriding the configured NeMo model"
     );
     let json: serde_json::Value = serde_json::from_str(&body).expect("response should be JSON");
     assert_eq!(
